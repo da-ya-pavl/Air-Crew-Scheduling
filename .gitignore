@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Results / output
+*.csv
+*.log
+results/
+
+# macOS
+.DS_Store
+CLAUDE.md
