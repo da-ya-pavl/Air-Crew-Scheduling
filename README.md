@@ -17,6 +17,7 @@ Python 3.10+.
 | `spp.py` | Data loader, evaluation helpers, Algorithm 1 (heuristic improvement), Algorithm 2 (pseudo-random init) |
 | `sa.py` | Simulated Annealing |
 | `bga.py` | Standard Binary Genetic Algorithm |
+| `improved_bga.py` | Improved BGA (stochastic ranking, ranking replacement, adaptive mutation) |
 
 ## Running
 
@@ -50,5 +51,18 @@ best cost : 13053
 optimal   : 11307
 gap       : 15.44%
 time      : 1.2s
+```
+
+Run Improved BGA on sppnw41 (single run):
+
+```bash
+python3 improved_bga.py
+```
+
+```
+best cost : 11307
+optimal   : 11307
+gap       : 0.00%
+time      : 82.0s
 ```
 
