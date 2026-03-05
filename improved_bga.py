@@ -6,28 +6,42 @@ from bga import uniform_crossover
 
 
 def stochastic_ranking(fitnesses, violations, pf=0.45):
-    # bubble-sort ranking from runarsson & yao [2]
+    # bubble-sort ranking from runarsson & yao [2], fig 1
+    # N sweeps with early termination on no-swap sweep
     n = len(fitnesses)
     idx = list(range(n))
-    swapped = True
-    while swapped:
-        swapped = False
-        for i in range(n - 1):
-            a, b = idx[i], idx[i + 1]
-            if (violations[a] == 0 and violations[b] == 0) or random.random() < pf:
-                # compare by fitness
-                if fitnesses[a] > fitnesses[b]:
+    f = fitnesses
+    v = violations
+    _random = random.random  # local binding for speed
+    all_feasible = all(vi == 0 for vi in v)
+    if all_feasible:
+        for _ in range(n):
+            swapped = False
+            for i in range(n - 1):
+                if _random() < pf and f[idx[i]] > f[idx[i + 1]]:
                     idx[i], idx[i + 1] = idx[i + 1], idx[i]
                     swapped = True
-            else:
-                # compare by violation
-                if violations[a] > violations[b]:
-                    idx[i], idx[i + 1] = idx[i + 1], idx[i]
-                    swapped = True
+            if not swapped:
+                break
+    else:
+        for _ in range(n):
+            swapped = False
+            for i in range(n - 1):
+                a, b = idx[i], idx[i + 1]
+                if (v[a] == 0 and v[b] == 0) or _random() < pf:
+                    if f[a] > f[b]:
+                        idx[i], idx[i + 1] = b, a
+                        swapped = True
+                else:
+                    if v[a] > v[b]:
+                        idx[i], idx[i + 1] = b, a
+                        swapped = True
+            if not swapped:
+                break
     return idx
 
 
-def ranking_replace(pop, fitnesses, violations, child, child_cost, child_viol):
+def ranking_replace(pop, fitnesses, violations, child, child_cost, child_viol, pop_hash=None):
     # deterministic ranking replacement from [1]
     # find worst by (violation, fitness) lexicographic max
     worst_i = 0
@@ -35,6 +49,8 @@ def ranking_replace(pop, fitnesses, violations, child, child_cost, child_viol):
         if (violations[i], fitnesses[i]) > (violations[worst_i], fitnesses[worst_i]):
             worst_i = i
     if (child_viol, child_cost) < (violations[worst_i], fitnesses[worst_i]):
+        if pop_hash is not None:
+            pop_hash.replace(pop[worst_i], child)
         pop[worst_i] = child
         fitnesses[worst_i] = child_cost
         violations[worst_i] = child_viol
@@ -47,22 +63,39 @@ def fixed_k_mutation(x, k):
     return x
 
 
-def has_duplicates(pop):
-    seen = set()
-    for x in pop:
-        b = x.tobytes()
-        if b in seen:
-            return True
-        seen.add(b)
-    return False
+class PopHashSet:
+    # tracks population member byte-strings incrementally
+    def __init__(self, pop):
+        self._counts: dict[bytes, int] = {}
+        self._n_dups = 0
+        for x in pop:
+            b = x.tobytes()
+            c = self._counts.get(b, 0)
+            if c >= 1:
+                self._n_dups += 1
+            self._counts[b] = c + 1
 
+    def has_duplicates(self) -> bool:
+        return self._n_dups > 0
 
-def is_duplicate_of_pop(child, pop):
-    cb = child.tobytes()
-    for x in pop:
-        if x.tobytes() == cb:
-            return True
-    return False
+    def contains(self, child_bytes: bytes) -> bool:
+        return child_bytes in self._counts
+
+    def replace(self, old: np.ndarray, new: np.ndarray):
+        # remove old
+        ob = old.tobytes()
+        c = self._counts[ob]
+        if c > 1:
+            self._counts[ob] = c - 1
+            self._n_dups -= 1  # one fewer duplicate pair
+        else:
+            del self._counts[ob]
+        # add new
+        nb = new.tobytes()
+        c = self._counts.get(nb, 0)
+        if c >= 1:
+            self._n_dups += 1
+        self._counts[nb] = c + 1
 
 
 def improved_bga(
@@ -73,20 +106,29 @@ def improved_bga(
     ma: int = 5,
     pf: float = 0.45,
 ) -> tuple[np.ndarray, float]:
-    # init population with pseudo-random init (all feasible)
+    # init population with pseudo-random init (may have violations after alg 1 fix)
     pop = [pseudo_random_init(inst) for _ in range(pop_size)]
     fitnesses = [raw_cost(pop[i], inst) for i in range(pop_size)]
-    violations = [0] * pop_size  # all feasible after alg 2
+    violations = [int(np.sum(compute_coverage(pop[i], inst) != 1)) for i in range(pop_size)]
 
-    best_i = int(np.argmin(fitnesses))
-    best_x = pop[best_i].copy()
-    best_cost = fitnesses[best_i]
+    best_cost = float('inf')
+    best_x = None
+    for i in range(pop_size):
+        if violations[i] == 0 and fitnesses[i] < best_cost:
+            best_cost = fitnesses[i]
+            best_x = pop[i].copy()
 
+    pop_hash = PopHashSet(pop)
     children_count = 0
+    rank_interval = 10
+    ranked = None
+    iter_count = 0
     while children_count < t_max:
-        k = ma if has_duplicates(pop) else ms
+        k = ma if pop_hash.has_duplicates() else ms
 
-        ranked = stochastic_ranking(fitnesses, violations, pf)
+        if iter_count % rank_interval == 0 or ranked is None:
+            ranked = stochastic_ranking(fitnesses, violations, pf)
+        iter_count += 1
         half = pop_size // 2
         p1 = pop[ranked[random.randrange(half)]]
         p2 = pop[ranked[random.randrange(half)]]
@@ -103,8 +145,8 @@ def improved_bga(
             best_cost = child_cost
             best_x = child.copy()
 
-        dup = is_duplicate_of_pop(child, pop)
-        ranking_replace(pop, fitnesses, violations, child, child_cost, child_viol)
+        dup = pop_hash.contains(child.tobytes())
+        ranking_replace(pop, fitnesses, violations, child, child_cost, child_viol, pop_hash)
 
         if not dup:
             children_count += 1

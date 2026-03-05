@@ -34,6 +34,7 @@ class SPPInstance:
             self.A[rows, j] = True
 
 
+
 def compute_coverage(x: np.ndarray, inst: SPPInstance) -> np.ndarray:
     return inst.A @ x.astype(np.int32)
 
@@ -49,99 +50,57 @@ def evaluate(x: np.ndarray, inst: SPPInstance, lam: float) -> tuple[float, int]:
 
 
 def heuristic_improvement(x: np.ndarray, inst: SPPInstance) -> np.ndarray:
-    # algorithm 1 (chu & beasley p331): remove redundant cols, fix uncovered rows, repeat.
-    # extended repair loop handles interlocked over-coverage using a banned-col set.
-    x = x.copy()
-    cover = inst.A @ x.astype(np.int32)  # shape (m,)
+    # algorithm 1 (chu & beasley p331): drop phase then add phase
+    col_rows = inst.col_rows
+    row_cols = inst.row_cols
+    costs = inst.costs
+    m = inst.m
+    n = inst.n
 
-    def remove_redundant() -> bool:
-        changed = False
-        selected = np.where(x == 1)[0]
-        order = selected[np.argsort(-inst.costs[selected])]
-        for j in order:
-            if x[j] == 0:
+    xl = x.tolist()
+    cover = [0] * m
+    for j in range(n):
+        if xl[j]:
+            for r in col_rows[j]:
+                cover[r] += 1
+
+    # drop phase: random order, drop if ANY row covered by j has cover >= 2
+    selected = [j for j in range(n) if xl[j]]
+    random.shuffle(selected)
+    for j in selected:
+        if not xl[j]:
+            continue
+        if any(cover[r] >= 2 for r in col_rows[j]):
+            xl[j] = 0
+            for r in col_rows[j]:
+                cover[r] -= 1
+
+    # add phase: visit uncovered rows in random order, each row once
+    # only add column j if beta_j ⊆ U (all rows of j are uncovered)
+    uncovered = set(i for i in range(m) if cover[i] == 0)
+    visit = list(uncovered)
+    random.shuffle(visit)
+    for i in visit:
+        if cover[i] != 0:
+            continue
+        best_j = -1
+        best_score = float('inf')
+        for j in row_cols[i]:
+            if xl[j]:
                 continue
-            if all(cover[r] >= 2 for r in inst.col_rows[j]):
-                x[j] = 0
-                for r in inst.col_rows[j]:
-                    cover[r] -= 1
-                changed = True
-        return changed
-
-    def fix_uncovered():
-        # greedy global: pick col with min cost per newly-covered uncovered row
-        while True:
-            unc = np.where(cover == 0)[0]
-            if len(unc) == 0:
-                break
-            uncovered_set = set(unc.tolist())
-            cands: dict[int, float] = {}
-            for i in uncovered_set:
-                for j in inst.row_cols[i]:
-                    if x[j] == 0 and j not in cands:
-                        newly = sum(1 for r in inst.col_rows[j] if r in uncovered_set)
-                        if newly > 0:
-                            cands[j] = inst.costs[j] / newly
-            if not cands:
-                break
-            j_star = min(cands, key=cands.__getitem__)
-            x[j_star] = 1
-            for r in inst.col_rows[j_star]:
+            # beta_j ⊆ U: all rows of j must be uncovered
+            if all(cover[r] == 0 for r in col_rows[j]):
+                score = costs[j] / len(col_rows[j])
+                if score < best_score:
+                    best_score = score
+                    best_j = j
+        if best_j != -1:
+            xl[best_j] = 1
+            for r in col_rows[best_j]:
                 cover[r] += 1
+                uncovered.discard(r)
 
-    remove_redundant()
-    fix_uncovered()
-    remove_redundant()
-
-    # repair loop: for any over-covered row, drop the most expensive covering col
-    # and re-run fix_uncovered with a banned set to avoid cycling
-    banned: set[int] = set()
-    for _iter in range(inst.n * 2):
-        over = np.where(cover > 1)[0]
-        if len(over) == 0:
-            break
-
-        # easiest row to fix: fewest selected cols covering it
-        r_target = min(over.tolist(), key=lambda r: sum(1 for j in inst.row_cols[r] if x[j] == 1))
-        cols_covering = [j for j in inst.row_cols[r_target] if x[j] == 1]
-
-        j_drop = max(cols_covering, key=lambda j: inst.costs[j])
-        x[j_drop] = 0
-        banned.add(j_drop)
-        for r in inst.col_rows[j_drop]:
-            cover[r] -= 1
-
-        while True:
-            unc = np.where(cover == 0)[0]
-            if len(unc) == 0:
-                break
-            uncovered_set = set(unc.tolist())
-            cands: dict[int, float] = {}
-            for i in uncovered_set:
-                for j in inst.row_cols[i]:
-                    if x[j] == 0 and j not in cands and j not in banned:
-                        newly = sum(1 for r in inst.col_rows[j] if r in uncovered_set)
-                        if newly > 0:
-                            cands[j] = inst.costs[j] / newly
-            if not cands:
-                # relax ban if stuck
-                banned.clear()
-                for i in uncovered_set:
-                    for j in inst.row_cols[i]:
-                        if x[j] == 0 and j not in cands:
-                            newly = sum(1 for r in inst.col_rows[j] if r in uncovered_set)
-                            if newly > 0:
-                                cands[j] = inst.costs[j] / newly
-                if not cands:
-                    break
-            j_star = min(cands, key=cands.__getitem__)
-            x[j_star] = 1
-            for r in inst.col_rows[j_star]:
-                cover[r] += 1
-
-        remove_redundant()
-
-    return x
+    return np.array(xl, dtype=np.int8)
 
 
 def pseudo_random_init(inst: SPPInstance) -> np.ndarray:
@@ -159,6 +118,15 @@ def pseudo_random_init(inst: SPPInstance) -> np.ndarray:
     return heuristic_improvement(x, inst)
 
 
+def feasible_init(inst: SPPInstance) -> np.ndarray:
+    # retry pseudo_random_init until feasible (all rows covered exactly once)
+    while True:
+        x = pseudo_random_init(inst)
+        cover = compute_coverage(x, inst)
+        if np.all(cover == 1):
+            return x
+
+
 if __name__ == "__main__":
     import os
 
@@ -173,10 +141,28 @@ if __name__ == "__main__":
 
     x_ones = np.ones(inst.n, dtype=np.int8)
     x_fixed = heuristic_improvement(x_ones, inst)
-    assert np.all(compute_coverage(x_fixed, inst) == 1)
-    print(f"heuristic_improvement(all-ones): pass  cost={raw_cost(x_fixed, inst):.0f}")
+    cover = compute_coverage(x_fixed, inst)
+    assert np.all(cover <= 1), "over-coverage after heuristic_improvement"
+    print(f"heuristic_improvement(all-ones): pass  cost={raw_cost(x_fixed, inst):.0f}  uncovered={int(np.sum(cover == 0))}")
 
+    feasible_count = 0
     for _ in range(100):
         x = pseudo_random_init(inst)
-        assert np.all(compute_coverage(x, inst) == 1)
-    print("pseudo_random_init (100 runs): pass")
+        c = compute_coverage(x, inst)
+        assert np.all(c <= 1), "over-coverage after pseudo_random_init"
+        if np.all(c == 1):
+            feasible_count += 1
+    print(f"pseudo_random_init (100 runs): pass  feasible={feasible_count}/100")
+
+    # feasible_init: must be 100% feasible on all problems
+    problems = ["sppnw41.txt", "sppnw42.txt", "sppnw43.txt"]
+    for pfile in problems:
+        ppath = os.path.join(base, pfile)
+        if not os.path.exists(ppath):
+            continue
+        pinst = SPPInstance(ppath)
+        for _ in range(100):
+            x = feasible_init(pinst)
+            c = compute_coverage(x, pinst)
+            assert np.all(c == 1), f"infeasible after feasible_init on {pfile}"
+        print(f"feasible_init on {pfile} (100 runs): pass  100% feasible")

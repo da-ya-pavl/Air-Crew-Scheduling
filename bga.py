@@ -2,7 +2,7 @@ import math
 import random
 import numpy as np
 
-from spp import SPPInstance, compute_coverage, raw_cost
+from spp import SPPInstance, compute_coverage, raw_cost, feasible_init
 
 
 def standard_bga(
@@ -19,9 +19,11 @@ def standard_bga(
         u = int(np.sum(cover != 1))
         return raw_cost(x, inst) + lam * u, u
 
-    # sparse random init: density ~ 2*m/n
+    # seed 10 feasible individuals, rest random
+    n_seeded = 10
     p_one = min(2.0 * inst.m / n, 0.5)
-    pop = [(np.random.random(n) < p_one).astype(np.int8) for _ in range(pop_size)]
+    pop = [feasible_init(inst) for _ in range(n_seeded)]
+    pop += [(np.random.random(n) < p_one).astype(np.int8) for _ in range(pop_size - n_seeded)]
     fitnesses = np.empty(pop_size)
     for i in range(pop_size):
         fitnesses[i], _ = penalized(pop[i])
