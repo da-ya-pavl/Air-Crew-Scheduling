@@ -19,7 +19,7 @@ Python 3.10+.
 | `bga.py` | Standard Binary Genetic Algorithm |
 | `improved_bga.py` | Improved BGA (stochastic ranking, ranking replacement, adaptive mutation) |
 | `run_experiments.py` | Runs 30 trials × 3 algorithms × 3 problems, prints results table, saves `results.json` |
-| `report.md` | Assignment report: algorithm descriptions, results, discussion |
+| `Assignment Report - Solving Air Crew Scheduling Problems using Simulated Annealing and Genetic Algorithms.docx` | Assignment report |
 
 ## Running
 
